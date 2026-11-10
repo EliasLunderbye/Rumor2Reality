@@ -13,6 +13,10 @@ The first independent changes add automated offline testing and CI, prepared
 with Codex assistance. These checks do not establish production readiness or
 live-model answer quality. The original project documentation follows below.
 
+The independent fork also provides a [local FastAPI interface](docs/API.md):
+`POST /verify`, `GET /health`, and interactive documentation at `/docs`.
+The API and Gradio interface share the same verification service.
+
 **Automated scientific claim verification using RAG and LLMs**
 
 ---
