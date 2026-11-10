@@ -29,6 +29,7 @@ Paragraph 3. Final paragraph."""
     assert len(chunks) >= 2
 
 
+@pytest.mark.model_download
 def test_embedding_model():
     """Test embedding generation."""
     model = EmbeddingModel("all-MiniLM-L6-v2")

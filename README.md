@@ -1,5 +1,18 @@
 # 1RT730-11800 LLM Project: Rumor-to-Evidence Claim Verification
 
+## Independent continuation
+
+This fork is maintained by Elias Lunderbye and continues the original
+[1RT730 team project](https://github.com/johnnylazoq/1RT730-11800_LLM_project).
+Original contributor credit and commit history are retained. My original work
+focused on the user interface and RAG pipeline integration.
+
+See [the development guide](docs/DEVELOPMENT.md) for clean-environment setup,
+offline tests, the optional real-model check and planned engineering milestones.
+The first independent changes add automated offline testing and CI, prepared
+with Codex assistance. These checks do not establish production readiness or
+live-model answer quality. The original project documentation follows below.
+
 **Automated scientific claim verification using RAG and LLMs**
 
 ---
