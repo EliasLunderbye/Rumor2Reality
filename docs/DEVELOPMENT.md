@@ -11,7 +11,7 @@ Install Python 3.12, then run from the repository root:
 
 ```powershell
 py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[ui,test]"
+.\.venv\Scripts\python.exe -m pip install -e ".[ui,api,test]"
 .\.venv\Scripts\python.exe -m pip check
 .\.venv\Scripts\python.exe -m pytest -q
 ```
@@ -49,7 +49,7 @@ files are ignored but are not automatically loaded by this application.
 
 ## Next milestones
 
-1. FastAPI endpoint around the existing workflow, with validation and error tests.
+1. Review the [FastAPI adapter](API.md) and its validation/error tests.
 2. Docker packaging and documented Ollama connectivity.
 3. Reviewed evaluation set measuring retrieval, citation support and latency.
 4. Demonstration deployment with logging and resource limits.
