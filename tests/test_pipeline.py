@@ -65,6 +65,45 @@ def test_duplicate_and_conflicting_metadata(chunks):
         group_chunks([chunks[0], chunks[0].model_copy(update={"chunk_id": "other", "title": "different"})])
 
 
+def test_final_sources_only_include_cited_papers(chunks):
+    class SelectiveLLM(FakeLLM):
+        def with_structured_output(self, schema, **kwargs):
+            parent = super().with_structured_output(schema, **kwargs)
+
+            def invoke(messages):
+                result = parent.invoke(messages)
+                if schema is not PaperAssessment:
+                    result["evidence_summary"][0]["citation_ids"] = ["2"]
+                return result
+
+            return SimpleNamespace(invoke=invoke)
+
+    result = verify_claim("Synthetic claim", chunks, llm=SelectiveLLM(), retries=0)
+    assert [source.citation_id for source in result.sources] == ["2"]
+    assert len(result.analyses) == 2
+
+
+def test_abstract_only_confidence_does_not_assume_independent_evidence(chunks):
+    class OverconfidentLLM(FakeLLM):
+        def with_structured_output(self, schema, **kwargs):
+            parent = super().with_structured_output(schema, **kwargs)
+
+            def invoke(messages):
+                result = parent.invoke(messages)
+                if schema is not PaperAssessment:
+                    result.update(confidence="high", confidence_reason="Independent trials.")
+                return result
+
+            return SimpleNamespace(invoke=invoke)
+
+    abstracts = [chunk.model_copy(update={"metadata": {"evidence_type": "abstract"}})
+                 for chunk in chunks]
+    result = verify_claim("Synthetic claim", abstracts, llm=OverconfidentLLM(), retries=0)
+    assert result.confidence == "moderate"
+    assert "overlap" in result.confidence_reason
+    assert "Independent trials" not in result.confidence_reason
+
+
 def test_ranking_limits_and_order(chunks):
     papers, notes = group_chunks(chunks, higher_score_better=False, max_papers=1)
     assert papers[0].paper_id == "synthetic-b"
@@ -96,6 +135,55 @@ def test_partial_failure_is_explicit(chunks):
     assert result.analyses[0].error == "TimeoutError"
     assert [s.paper_id for s in result.sources] == ["synthetic-b"]
     assert any("failed" in note for note in result.limitations)
+
+
+@pytest.mark.parametrize("all_insufficient", [False, True])
+def test_treatment_only_evidence_is_excluded_from_prevention_synthesis(chunks, all_insufficient):
+    class PreventionLLM(FakeLLM):
+        def with_structured_output(self, schema, **kwargs):
+            parent = super().with_structured_output(schema, **kwargs)
+
+            def invoke(messages):
+                if schema is PaperAssessment:
+                    paper = json.loads(messages[1].content.split("Paper evidence JSON:\n")[1])
+                    assessment = parent.invoke(messages)
+                    if all_insufficient or paper["paper_id"] == "synthetic-a":
+                        assessment["stance"] = "insufficient"
+                        assessment["explanation"] = "This study assessed treatment after onset."
+                        assessment["findings"] = []
+                    return assessment
+                assert not all_insufficient, "Synthesis should be skipped without eligible evidence"
+                payload = json.loads(messages[1].content)
+                assert [a["paper_id"] for a in payload["analyses"]] == ["synthetic-b"]
+                assert [s["paper_id"] for s in payload["sources"]] == ["synthetic-b"]
+                return parent.invoke(messages)
+
+            return SimpleNamespace(invoke=invoke)
+
+    result = verify_claim("Synthetic prevention claim", chunks, llm=PreventionLLM(), retries=0)
+    assert len(result.analyses) == 2
+    assert result.analyses[0].assessment.stance == "insufficient"
+    assert [s.paper_id for s in result.sources] == ([] if all_insufficient else ["synthetic-b"])
+    assert result.verdict == ("insufficient" if all_insufficient else "mixed")
+
+
+def test_scoped_finding_survives_insufficient_paper_stance(chunks):
+    class ScopedLLM(FakeLLM):
+        def with_structured_output(self, schema, **kwargs):
+            parent = super().with_structured_output(schema, **kwargs)
+
+            def invoke(messages):
+                result = parent.invoke(messages)
+                if schema is PaperAssessment:
+                    result["stance"] = "insufficient"
+                return result
+
+            return SimpleNamespace(invoke=invoke)
+
+    result = verify_claim("Synthetic claim", chunks, llm=ScopedLLM(), retries=0)
+    assert all(a.assessment.stance == "insufficient" for a in result.analyses)
+    assert [source.paper_id for source in result.sources] == ["synthetic-a", "synthetic-b"]
+    assert result.evidence_summary[0].citation_ids == ["1", "2"]
 
 
 def test_empty_and_failed_evidence_need_no_aggregate_call(chunks):

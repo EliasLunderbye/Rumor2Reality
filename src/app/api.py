@@ -1,5 +1,7 @@
 """Local HTTP interface to the same RAG service used by Gradio."""
 import logging
+import os
+from pathlib import Path
 from threading import BoundedSemaphore
 from typing import Annotated
 
@@ -40,17 +42,37 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/verify", response_model=VerifyResponse)
+@app.post("/verify", response_model=VerifyResponse, responses={
+    503: {"description": "Paper search throttled, verification busy, or local index unavailable."}
+})
 def verify(request: VerifyRequest, verifier=Depends(get_verifier)):
     if not _capacity.acquire(blocking=False):
         raise HTTPException(status_code=503, detail={
             "code": "busy", "message": "Verification capacity is full. Try again shortly."
         }, headers={"Retry-After": "5"})
     try:
-        result = verifier(request.claim, top_k=request.top_k)
+        # Server-owned configuration: HTTP clients cannot choose filesystem paths.
+        index_path = os.getenv("RUMOR2REALITY_VECTOR_STORE", "").strip()
+        options = {}
+        if index_path:
+            path = Path(index_path).expanduser()
+            if not all((path / name).is_file() for name in ("index.faiss", "metadata.json")):
+                raise HTTPException(status_code=503, detail={
+                    "code": "local_index_unavailable",
+                    "message": "The configured local evidence index is missing. Build it before verifying claims."
+                })
+            options = {"evidence_source": "Existing vector store", "vector_store_path": str(path)}
+        result = verifier(request.claim, top_k=request.top_k, **options)
         return VerifyResponse(assessment=result["assessment"], timings=result["timings"],
                               model=result["metadata"]["model"],
                               retrieved_chunks=result["metadata"]["retrieved_chunks"])
+    except HTTPException:
+        raise
+    except service.PaperDiscoveryRateLimited as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "paper_search_rate_limited",
+            "message": "Semantic Scholar temporarily throttled paper search. Try again later or use a local evidence index."
+        }, headers={"Retry-After": str(exc.retry_after)} if exc.retry_after is not None else None) from None
     except service.VerificationUnavailable:
         logger.warning("Verification dependency failed", exc_info=True)
         raise HTTPException(status_code=502, detail={

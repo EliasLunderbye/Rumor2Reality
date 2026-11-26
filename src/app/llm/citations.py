@@ -2,6 +2,10 @@
 from app.llm.schemas import PaperAnalysis, ScientificPaper, SourceReference
 
 
+class CitationValidationError(ValueError):
+    """A citation validation failure with a fixed, safe diagnostic."""
+
+
 def validate_analysis(paper: ScientificPaper, analysis: PaperAnalysis) -> None:
     if analysis.paper_id != paper.paper_id:
         raise ValueError("Analysis belongs to a different paper")
@@ -12,9 +16,13 @@ def validate_analysis(paper: ScientificPaper, analysis: PaperAnalysis) -> None:
         raise ValueError("Chunk belongs to a different paper")
     for finding in analysis.assessment.findings:
         if finding.chunk_id not in chunks or not finding.statement.strip():
-            raise ValueError("Unknown citation or empty finding")
+            raise CitationValidationError(
+                "Unknown citation or empty finding. Use a nonblank statement and copy an exact chunk_id."
+            )
     if analysis.assessment.stance != "insufficient" and not analysis.assessment.findings:
-        raise ValueError("Substantive stance has no cited evidence")
+        raise CitationValidationError(
+            "Substantive stance has no cited evidence. Add a cited finding or use insufficient."
+        )
 
 
 def source_registry(papers: list[ScientificPaper], analyses: list[PaperAnalysis]) -> list[SourceReference]:

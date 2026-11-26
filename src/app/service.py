@@ -15,6 +15,14 @@ class VerificationUnavailable(RuntimeError):
     """An external retrieval/model dependency could not complete verification."""
 
 
+class PaperDiscoveryRateLimited(VerificationUnavailable):
+    """The paper provider temporarily throttled discovery."""
+
+    def __init__(self, retry_after: int | None):
+        super().__init__("Semantic Scholar throttled paper discovery.")
+        self.retry_after = retry_after
+
+
 def pipeline_events(claim, top_k=4, model_name=DEFAULT_MODEL,
                     evidence_source="Semantic Scholar", vector_store_path="", *, llm=None):
     """Yield actual stage transitions followed by the UI result contract."""
@@ -34,10 +42,12 @@ def pipeline_events(claim, top_k=4, model_name=DEFAULT_MODEL,
     from app.rag.retriever import create_retriever
     embedding_model = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     if evidence_source == "Semantic Scholar":
-        from app.rag.collect_papers import fetch_papers, papers_to_chunks
+        from app.rag.collect_papers import PaperSearchRateLimited, fetch_papers, papers_to_chunks
         from app.rag.ingest import ingest_chunks
         try:
             papers = fetch_papers(claim, limit=min(100, max(20, top_k * 3)))
+        except PaperSearchRateLimited as exc:
+            raise PaperDiscoveryRateLimited(exc.retry_after) from exc
         except (OSError, RuntimeError) as exc:
             raise VerificationUnavailable("Paper discovery failed; the claim has not been assessed.") from exc
         chunks = papers_to_chunks(papers)
@@ -63,7 +73,10 @@ def pipeline_events(claim, top_k=4, model_name=DEFAULT_MODEL,
     yield "generate", None
     generation_start = perf_counter()
     try:
-        result = verify_claim(claim, selected, llm=llm if llm is not None else get_llm(model_name=model_name), max_papers=top_k)
+        result = verify_claim(
+            claim, selected, llm=llm if llm is not None else get_llm(model_name=model_name),
+            max_papers=top_k, max_workers=1,
+        )
     except Exception as exc:
         raise VerificationUnavailable("Model processing failed; the claim has not been assessed.") from exc
     if result.analyses and all(a.status == "failed" for a in result.analyses):

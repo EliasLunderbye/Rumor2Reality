@@ -17,6 +17,7 @@ def http_client():
 
 @pytest.fixture
 def client(http_client, monkeypatch):
+    monkeypatch.delenv("RUMOR2REALITY_VECTOR_STORE", raising=False)
     monkeypatch.setattr(api, "_capacity", BoundedSemaphore(2))
     try:
         yield http_client
@@ -120,3 +121,42 @@ def test_discovery_failure_maps_to_502(client, empty_discovery, monkeypatch):
         raise RuntimeError("rate limited")
     monkeypatch.setattr(collect_papers, "fetch_papers", fail)
     assert client.post("/verify", json={"claim": "A claim"}).status_code == 502
+
+
+def test_local_index_bypasses_discovery(client, monkeypatch, tmp_path):
+    from app.llm.schemas import RetrievedChunk
+    from app.rag import collect_papers, retriever
+    for name in ("index.faiss", "metadata.json"):
+        (tmp_path / name).touch()
+    monkeypatch.setenv("RUMOR2REALITY_VECTOR_STORE", str(tmp_path))
+    def unexpected(*a, **kw):
+        pytest.fail("Local verification must not call Semantic Scholar")
+    monkeypatch.setattr(collect_papers, "fetch_papers", unexpected)
+    chunk = RetrievedChunk(paper_id="local", chunk_id="local:1", title="Local paper",
+                           text="Synthetic local evidence.")
+    class Retriever:
+        def retrieve(self, claim, k):
+            assert k == 3
+            return [chunk]
+    def create(path, model):
+        assert path == str(tmp_path)
+        return Retriever()
+    monkeypatch.setattr(retriever, "create_retriever", create)
+    api.app.dependency_overrides[api.get_verifier] = lambda: (
+        lambda claim, **kw: service.run_pipeline(claim, llm=FakeLLM(), **kw)
+    )
+    response = client.post("/verify", json={"claim": "A claim", "top_k": 3})
+    assert response.status_code == 200
+    assert response.json()["assessment"]["sources"][0]["excerpt"] == chunk.text
+
+
+def test_missing_local_index_does_not_fallback(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("RUMOR2REALITY_VECTOR_STORE", str(tmp_path))
+    def unexpected(*a, **kw):
+        pytest.fail("Missing local index must not invoke verification")
+    api.app.dependency_overrides[api.get_verifier] = lambda: unexpected
+    for _ in range(3):
+        response = client.post("/verify", json={"claim": "A claim"})
+        assert response.status_code == 503
+        assert response.json()["detail"]["code"] == "local_index_unavailable"
+        assert str(tmp_path) not in response.text

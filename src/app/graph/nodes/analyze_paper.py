@@ -5,7 +5,8 @@ from app.llm.prompts import PAPER_ANALYSIS_SYSTEM_PROMPT
 from app.llm.citations import validate_analysis
 
 
-def analyze_single_paper(claim: str, paper: ScientificPaper, *, llm=None, retry_feedback=None) -> PaperAnalysis:
+def analyze_single_paper(claim: str, paper: ScientificPaper, *, llm=None,
+                         retry_feedback=None, recheck_findings=False) -> PaperAnalysis:
     if not paper.chunks:
         return PaperAnalysis(paper_id=paper.paper_id, title=paper.title,
                              assessment=PaperAssessment(stance="insufficient",
@@ -22,7 +23,17 @@ def analyze_single_paper(claim: str, paper: ScientificPaper, *, llm=None, retry_
         messages.append(HumanMessage(content=(
             "The previous response failed validation. Return a complete structured assessment "
             "with findings containing exact chunk IDs from the supplied paper. "
-            f"Validation error type: {retry_feedback}")))
+            f"Retry diagnostic: {retry_feedback}")))
+    if recheck_findings:
+        messages.append(HumanMessage(content=(
+            "Recheck the excerpts for an explicitly reported result measuring the claimed "
+            "outcome for the stated intervention. A null result is a finding. A result "
+            "in one setting is a finding even for a claim about all settings. A review "
+            "reporting a result counts even if it does not list its trials. Extract the "
+            "reported observation first and attribute it to the excerpt. If present, "
+            "put it in findings with the exact chunk ID even if stance is insufficient. "
+            "Discuss causal uncertainty and missing methods in limitations. Keep findings "
+            "empty if the excerpts report only an unrelated outcome or intervention.")))
     assessment = model.invoke(messages)
     assessment = PaperAssessment.model_validate(assessment)
     result = PaperAnalysis(paper_id=paper.paper_id, title=paper.title, assessment=assessment)
