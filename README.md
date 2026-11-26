@@ -13,6 +13,24 @@ The first independent changes add automated offline testing and CI, prepared
 with Codex assistance. These checks do not establish production readiness or
 live-model answer quality. The original project documentation follows below.
 
+The independent fork also provides a [local FastAPI interface](docs/API.md):
+`POST /verify`, `GET /health`, and interactive documentation at `/docs`.
+The API and Gradio interface share the same verification service.
+
+### Run the local demo
+
+Follow the [development setup](docs/DEVELOPMENT.md), start Ollama with the
+configured model installed, and run `.\scripts\start-api.ps1` in PowerShell.
+The launcher prompts for a Semantic Scholar API key if one is missing.
+Open [Swagger](http://127.0.0.1:8000/docs) and submit a claim to `POST /verify`.
+
+In the live smoke test, a claim about vitamin C and common cold prevention
+returned HTTP 200. All four paper analyses completed, and the summary cited
+three sources. The treatment-only paper remained in the detailed analysis.
+The result displayed moderate confidence and explained the limits of
+abstract-only evidence. See the [API guide](docs/API.md) for troubleshooting
+and the fixed cases used to evaluate citations.
+
 **Automated scientific claim verification using RAG and LLMs**
 
 ---

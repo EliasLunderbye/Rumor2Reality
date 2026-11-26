@@ -1,13 +1,37 @@
 """Fetch papers from Semantic Scholar API."""
 import os
 import json
+import math
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from threading import Lock
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from app.llm.schemas import RetrievedChunk
+
+_request_lock = Lock()
+_next_request_at = 0.0
+
+
+class PaperSearchRateLimited(RuntimeError):
+    """Semantic Scholar throttled the paper search after bounded retries."""
+
+    def __init__(self, message: str, retry_after: int | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def _open_search(request):
+    global _next_request_at
+    # One process shares the key across concurrent verification requests.
+    with _request_lock:
+        delay = _next_request_at - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+        _next_request_at = time.monotonic() + 1.1
+        return urlopen(request, timeout=30)
 
 
 def fetch_papers(query: str, limit: int = 10) -> list[dict]:
@@ -32,7 +56,7 @@ def fetch_papers(query: str, limit: int = 10) -> list[dict]:
     request = Request(f"https://api.semanticscholar.org/graph/v1/paper/search?{params}", headers=headers)
     for attempt in range(3):
         try:
-            with urlopen(request, timeout=30) as response:
+            with _open_search(request) as response:
                 payload = json.load(response)
             break
         except HTTPError as exc:
@@ -51,11 +75,12 @@ def fetch_papers(query: str, limit: int = 10) -> list[dict]:
                         pass
             # Do not retry earlier than the server allows or block the UI indefinitely.
             if attempt == 2 or delay > 30:
-                raise RuntimeError(
+                raise PaperSearchRateLimited(
                     "Semantic Scholar is rate-limiting paper searches (HTTP 429). "
                     "Try again later, set SEMANTIC_SCHOLAR_API_KEY before starting the app, "
                     "or choose Existing vector store to use previously ingested papers/PDFs. "
-                    "The claim has not been assessed."
+                    "The claim has not been assessed.",
+                    retry_after=math.ceil(delay) if retry_after and math.isfinite(delay) else None,
                 ) from exc
             time.sleep(delay)
     

@@ -7,7 +7,9 @@ from app.llm.schemas import AggregationAssessment, EvidenceEntry, FinalAssessmen
 
 
 def aggregate_evidence(claim, papers, analyses, *, limitations=(), evidence_cutoff=None, llm=None):
-    sources = source_registry(papers, analyses)
+    eligible = [analysis for analysis in analyses
+                if analysis.status == "ok" and analysis.assessment.findings]
+    sources = source_registry(papers, eligible)
     notes = list(limitations)
     if any(c.metadata.get("synthetic") for p in papers for c in p.chunks):
         notes.append("SYNTHETIC TEST EVIDENCE: this output is not a scientific assessment of real studies.")
@@ -25,19 +27,39 @@ def aggregate_evidence(claim, papers, analyses, *, limitations=(), evidence_cuto
     else:
         model = (llm if llm is not None else get_llm()).with_structured_output(
             AggregationAssessment, method="json_schema")
-        payload = {"claim": claim, "analyses": [a.model_dump() for a in analyses],
+        payload = {"claim": claim, "analyses": [a.model_dump() for a in eligible],
                    "sources": [s.model_dump() for s in sources],
                    "limitations": notes, "evidence_cutoff": evidence_cutoff}
-        assessment = AggregationAssessment.model_validate(model.invoke([
-            SystemMessage(content=AGGREGATION_SYSTEM_PROMPT),
-            HumanMessage(content=json.dumps(payload)),
-        ]))
         known = {s.citation_id for s in sources}
-        for item in assessment.evidence_summary:
-            if not item.statement.strip() or not item.citation_ids or not set(item.citation_ids) <= known:
+        payload["allowed_citation_ids"] = sorted(known)
+        for attempt in range(2):
+            assessment = AggregationAssessment.model_validate(model.invoke([
+                SystemMessage(content=AGGREGATION_SYSTEM_PROMPT),
+                HumanMessage(content=json.dumps(payload)),
+            ]))
+            if assessment.evidence_summary and all(
+                item.statement.strip() and item.citation_ids and set(item.citation_ids) <= known
+                for item in assessment.evidence_summary
+            ):
+                break
+            if attempt == 1:
                 raise ValueError("Aggregate contains an empty statement, missing citation, or unknown citation")
-        if not assessment.evidence_summary:
-            raise ValueError("Aggregate omitted the cited evidence summary")
+            payload["correction"] = (
+                "The previous response failed citation validation. Return a nonempty "
+                "evidence_summary with a nonblank statement and at least one citation ID "
+                "per item. Copy IDs exactly from allowed_citation_ids."
+            )
+    cited_ids = {citation_id for item in assessment.evidence_summary
+                 for citation_id in item.citation_ids}
+    cited_sources = [source for source in sources if source.citation_id in cited_ids]
+    if cited_sources and all(source.metadata.get("evidence_type") == "abstract"
+                             for source in cited_sources):
+        if assessment.confidence == "high":
+            assessment.confidence = "moderate"
+        assessment.confidence_reason = (
+            "The assessment relies on cited abstracts. Full methods and any overlap "
+            "in underlying studies could not be verified."
+        )
     return FinalAssessment(
         claim=claim, **assessment.model_dump(exclude={"limitations"}),
         limitations=list(dict.fromkeys(notes + assessment.limitations +
@@ -45,5 +67,6 @@ def aggregate_evidence(claim, papers, analyses, *, limitations=(), evidence_cuto
         evidence=[EvidenceEntry(paper_id=a.paper_id, stance=a.assessment.stance,
             summary=a.assessment.explanation, study_design=a.assessment.study_design,
             status=a.status) for a in analyses],
-        sources=sources, analyses=analyses, evidence_cutoff=evidence_cutoff,
+        sources=cited_sources,
+        analyses=analyses, evidence_cutoff=evidence_cutoff,
     )

@@ -7,6 +7,7 @@ def get_llm(model_name=None):
     return ChatOllama(
         model=model_name or os.getenv("OLLAMA_MODEL", "frob/qwen3.5-instruct:9b"),
         temperature=0,
+        num_ctx=int(os.getenv("OLLAMA_NUM_CTX", "8192")),
         client_kwargs={"timeout": float(os.getenv("OLLAMA_TIMEOUT", "120"))},
         base_url=os.getenv(
             "OLLAMA_BASE_URL",

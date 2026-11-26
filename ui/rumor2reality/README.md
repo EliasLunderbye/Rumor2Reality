@@ -1,5 +1,11 @@
 # Rumor2Reality UI
 
+Choose **Explore the demo** for a condensed replay of a successful verification.
+It opens without calling Semantic Scholar or Ollama. Select a citation to open
+its excerpt, or expand **Why one paper was excluded** to see an example of
+evidence screening. The demo fills the claim field so **Check claim** can run
+the same example live when Ollama and Semantic Scholar are available.
+
 The UI runs Semantic Scholar discovery → embeddings/FAISS retrieval → LangGraph
 paper analysis → citation-validated synthesis with Ollama. No canned verdicts are used.
 

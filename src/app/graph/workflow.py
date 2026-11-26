@@ -7,6 +7,7 @@ from app.graph.nodes.analyze_paper import analyze_single_paper
 from app.graph.nodes.aggregate_evidence import aggregate_evidence
 from app.graph.nodes.rag import retrieve_evidence
 from app.llm.schemas import RetrievedChunk, PaperAnalysis, PaperAssessment
+from app.llm.citations import CitationValidationError
 
 
 def build_graph(*, llm=None, max_workers=3, retries=1, retriever=None, **group_options):
@@ -15,7 +16,7 @@ def build_graph(*, llm=None, max_workers=3, retries=1, retriever=None, **group_o
     Args:
         llm: LLM client (optional, uses default if None)
         max_workers: Number of parallel workers for analysis
-        retries: Number of retries for failed analyses
+        retries: Number of retries for failed analyses or a second look at missing findings
         retriever: RAGRetriever instance (optional, for RAG-based retrieval)
         **group_options: Additional options for grouping
         
@@ -35,11 +36,25 @@ def build_graph(*, llm=None, max_workers=3, retries=1, retriever=None, **group_o
     def analyze(state):
         def run(paper):
             error = None
+            feedback = None
+            empty_analysis = None
             for attempt in range(retries + 1):
                 try:
-                    return analyze_single_paper(state["claim"], paper, llm=llm, retry_feedback=error)
+                    analysis = analyze_single_paper(state["claim"], paper, llm=llm,
+                        retry_feedback=feedback, recheck_findings=empty_analysis is not None)
+                    if analysis.assessment.findings or not paper.chunks or attempt == retries:
+                        return analysis
+                    empty_analysis = analysis
+                    error = None
+                    feedback = None
                 except Exception as exc:
                     error = type(exc).__name__
+                    feedback = error
+                    if isinstance(exc, CitationValidationError):
+                        error = "ValueError"
+                        feedback = str(exc)
+            if empty_analysis is not None:
+                return empty_analysis
             return PaperAnalysis(paper_id=paper.paper_id, title=paper.title, status="failed",
                 error=error, assessment=PaperAssessment(stance="insufficient",
                     explanation="Paper could not be analyzed due to a processing failure."))
