@@ -9,6 +9,7 @@ import gradio as gr
 
 from pipeline import DEFAULT_MODEL, pipeline_events
 from urllib.parse import urlsplit
+from app.service import PaperDiscoveryRateLimited
 
 
 DEFAULT_CLAIM = "Vitamin C prevents the common cold"
@@ -83,7 +84,7 @@ def _sources_cards_html(sources: list[dict[str, Any]]) -> str:
                 {page_html}
               </div>
               <p>{reason}</p>
-              <details class="r2r-evidence-excerpt">
+              <details class="r2r-evidence-excerpt" id="r2r-citation-{rank}">
                 <summary>Show evidence excerpt <span>· {section}</span></summary>
                 <blockquote>{snippet}</blockquote>
               </details>
@@ -95,44 +96,17 @@ def _sources_cards_html(sources: list[dict[str, Any]]) -> str:
 
 
 def _progress_html(active_step: str) -> str:
-    steps = [
-        ("scrape", "Find papers"),
-        ("retrieve", "Select evidence"),
-        ("generate", "Analyze evidence"),
-        ("done", "Show assessment"),
-    ]
-
-    cards = []
-    reached_active = False
-    for key, label in steps:
-        if active_step == "ready":
-            state = "waiting"
-            state_text = "Waiting"
-        elif active_step == "done":
-            state = "done"
-            state_text = "Done"
-        elif key == active_step:
-            state = "active"
-            state_text = "Running"
-            reached_active = True
-        elif reached_active:
-            state = "waiting"
-            state_text = "Waiting"
-        else:
-            state = "done"
-            state_text = "Done"
-        cards.append(
-            f"""
-            <div class="r2r-step r2r-step-{state}">
-              <span class="r2r-step-dot"></span>
-              <div>
-                <strong>{label}</strong>
-                <small>{state_text}</small>
-              </div>
-            </div>
-            """
-        )
-    return f"""<div class="r2r-progress">{''.join(cards)}</div>"""
+    labels = {
+        "scrape": "Finding research papers",
+        "retrieve": "Selecting relevant excerpts",
+        "generate": "Comparing the evidence",
+        "done": "Live check complete",
+        "demo": "Recorded demo · Saved result, no live search",
+        "limited": "Live search temporarily unavailable",
+        "failed": "Check stopped",
+    }
+    return (f'<div class="r2r-status" role="status">{labels[active_step]}</div>'
+            if active_step in labels else "")
 
 
 def _debug_json(result: dict[str, Any]) -> str:
@@ -146,6 +120,22 @@ def _inline_markdown(text: str) -> str:
     return escaped
 
 
+def _linked_finding(item: str, source_ids: set[str]) -> str:
+    match = re.fullmatch(r"(.*) \[([\d, ]+)\]", item, flags=re.DOTALL)
+    if not match:
+        return html.escape(item)
+    statement, citations = match.groups()
+    links = []
+    for citation in citations.split(","):
+        citation = citation.strip()
+        if citation in source_ids:
+            links.append(f'<a class="r2r-citation" href="#r2r-citation-{citation}" '
+                         f'aria-label="Read cited excerpt {citation}">{citation}</a>')
+        else:
+            links.append(html.escape(citation))
+    return f"{html.escape(statement)} {' '.join(links)}"
+
+
 def _answer_html(
     markdown_text: str,
     tone: str = "ready",
@@ -153,6 +143,8 @@ def _answer_html(
     confidence: dict[str, str] | None = None,
     evidence_summary: list[str] | None = None,
     limitations: list[str] | None = None,
+    source_ids: set[str] | None = None,
+    analyses: list[dict[str, Any]] | None = None,
 ) -> str:
     blocks: list[str] = []
     for raw_block in markdown_text.strip().split("\n\n"):
@@ -165,6 +157,11 @@ def _answer_html(
             lines = [_inline_markdown(line) for line in block.splitlines()]
             blocks.append(f"<p>{'<br>'.join(lines)}</p>")
 
+    findings = evidence_summary or []
+    takeaway = (
+        f'<p class="r2r-takeaway">{_linked_finding(findings[0], source_ids or set())}</p>'
+        if findings else ""
+    )
     verdict_html = ""
     if verdict:
         label = html.escape(verdict.get("label", "Not enough evidence"))
@@ -174,6 +171,8 @@ def _answer_html(
         verdict_html = f"""
         <div class="r2r-verdict r2r-verdict-{verdict_tone}">
           <span>{label}</span>
+          <small>Based on the evidence reviewed</small>
+          {takeaway}
           {rationale_html}
         </div>
         """
@@ -190,23 +189,37 @@ def _answer_html(
         """
 
     summary_html = ""
-    if evidence_summary:
-        items = "".join(f"<li>{html.escape(item)}</li>" for item in evidence_summary)
+    if findings[1:]:
+        items = "".join(f"<li>{_linked_finding(item, source_ids or set())}</li>"
+                        for item in findings[1:])
         summary_html = f"""
         <div class="r2r-output-list">
-          <strong>Evidence summary</strong>
+          <strong>Other findings</strong>
           <ul>{items}</ul>
         </div>
         """
 
     limitations_html = ""
-    if limitations:
-        items = "".join(f"<li>{html.escape(item)}</li>" for item in limitations)
+    paper_notes = [
+        (analysis["title"], analysis["assessment"]["limitations"])
+        for analysis in (analyses or [])
+        if analysis["assessment"]["limitations"]
+    ]
+    attributed = {note for _, notes in paper_notes for note in notes}
+    general_notes = [note for note in (limitations or []) if note not in attributed]
+    if general_notes or paper_notes:
+        sections = []
+        if general_notes:
+            items = "".join(f"<li>{html.escape(note)}</li>" for note in general_notes)
+            sections.append(f"<strong>Overall assessment</strong><ul>{items}</ul>")
+        for title, notes in paper_notes:
+            items = "".join(f"<li>{html.escape(note)}</li>" for note in notes)
+            sections.append(f"<strong>{html.escape(title)}</strong><ul>{items}</ul>")
         limitations_html = f"""
-        <div class="r2r-output-list r2r-limitations">
-          <strong>Limitations</strong>
-          <ul>{items}</ul>
-        </div>
+        <details class="r2r-output-list r2r-limitations">
+          <summary>Limitations by assessment and paper</summary>
+          {''.join(sections)}
+        </details>
         """
 
     content = "".join(blocks)
@@ -238,16 +251,95 @@ def analyse_claim(claim: str, top_k: int, model_name: str, evidence_source="Sema
             else:
                 yield (_progress_html("done"), _answer_html(result["answer"], "done",
                        verdict=result["verdict"], confidence=result["confidence"],
-                       evidence_summary=result["evidence_summary"], limitations=result["limitations"]),
+                       evidence_summary=result["evidence_summary"], limitations=result["limitations"],
+                       source_ids={str(source["rank"]) for source in result["sources"]},
+                       analyses=result["assessment"]["analyses"]),
                        _sources_cards_html(result["sources"]),
                        {"timings": result["timings"], "metadata": result["metadata"]}, _debug_json(result))
+    except PaperDiscoveryRateLimited as exc:
+        delay = (f"Wait at least {exc.retry_after} seconds before trying again."
+                 if exc.retry_after else "Wait a few minutes before trying again.")
+        yield (_progress_html("limited"), _answer_html(
+            "### Paper search is temporarily limited\n\n"
+            f"Semantic Scholar received too many requests. {delay} "
+            "You can explore the recorded demo while you wait.", "warning"),
+            _empty_sources_html(), {"status": "rate_limited", "retry_after": exc.retry_after}, "")
     except Exception as exc:
-        yield (_progress_html("ready"), _answer_html("### Check failed\n\n" + str(exc), "warning"),
+        yield (_progress_html("failed"), _answer_html("### Check failed\n\n" + str(exc), "warning"),
                _empty_sources_html(), {"status": "failed", "error_type": type(exc).__name__}, "")
 
 
 def clear_outputs():
     return _progress_html("ready"), _answer_html(READY_ANSWER), _empty_sources_html(), READY_TIMING, ""
+
+
+def show_recorded_demo():
+    # A condensed replay of the verified live run, with short excerpt selections.
+    sources = [
+        {"rank": "1", "title": "The vitamin C and the common cold: a narrative review",
+         "year": 2025, "stance": "contradicts", "study_type": "narrative review",
+         "section": "abstract", "why_selected": "The review addresses prevention in the general population.",
+         "snippet": "Current evidence does not show that vitamin C reduces the incidence of the common cold in the general population.",
+         "url": "https://doi.org/10.12775/jehs.2025.85.66914"},
+        {"rank": "3", "title": "Vitamin C for the common cold and pneumonia",
+         "year": 2025, "stance": "neutral", "study_type": "overview",
+         "section": "abstract", "why_selected": "The overview reports different findings by population.",
+         "snippet": "In controlled trials in the general human population, >1 g/day vitamin C did not prevent common colds. However, in 5 trials with participants undertaking heavy physical activity, vitamin C halved the incidence of colds.",
+         "url": "https://doi.org/10.20452/pamw.16926"},
+        {"rank": "4", "title": "Effectiveness of vitamin C in the management of viral infections in adults",
+         "year": 2024, "stance": "insufficient", "study_type": "unknown",
+         "section": "abstract", "why_selected": "The paper reports uncertainty about prevention.",
+         "snippet": "The current evidence is insufficient to recommend the use of vitamin C for preventing or treating viral infections in the general population.",
+         "url": "https://doi.org/10.12775/qs.2024.20.53985"},
+    ]
+    excluded = {
+        "title": "Vitamin C as a Supplementary Therapy in Relieving Symptoms of the Common Cold",
+        "reason": "The trials studied treatment after infection alongside antivirals, so the paper was excluded from the final prevention citations.",
+        "doi": "10.1155/2020/8573742",
+    }
+    verdict = {"label": "Evidence weighs against the broad claim", "tone": "refuted"}
+    confidence = {"label": "Moderate", "rationale": (
+        "The assessment relies on cited abstracts. Full methods and any overlap "
+        "in underlying studies could not be verified.")}
+    findings = [
+        "The cited evidence did not establish a prevention benefit in the general population. [1, 3, 4]",
+        "The overview reported fewer colds in trials involving people undertaking heavy physical activity. [3]",
+    ]
+    answer = _answer_html(
+        "Choose a citation to inspect the excerpt, or select **Check claim** to run this example live.",
+        "done", verdict=verdict, confidence=confidence, evidence_summary=findings,
+        source_ids={source["rank"] for source in sources}, limitations=[
+            "The demo shows selected text from abstracts. The retrieved papers may not cover all relevant research."
+        ],
+    )
+    excluded_html = (
+        '<details class="r2r-output-list r2r-excluded"><summary>Why one paper was excluded</summary>'
+        f'<p><a href="https://doi.org/{excluded["doi"]}" target="_blank" rel="noopener noreferrer">'
+        f'{html.escape(excluded["title"])}</a></p><p>{html.escape(excluded["reason"])}</p></details>'
+    )
+    return (DEFAULT_CLAIM, _progress_html("demo"), answer,
+            _sources_cards_html(sources) + excluded_html,
+            {"status": "recorded_demo"}, _debug_json({
+                "mode": "recorded_demo", "claim": DEFAULT_CLAIM, "verdict": verdict,
+                "confidence": confidence, "findings": findings, "sources": sources,
+                "excluded_paper": excluded,
+            }))
+
+
+JS = """
+() => {
+    document.addEventListener("click", (event) => {
+        const link = event.target.closest?.(".r2r-citation");
+        if (!link) return;
+        const excerpt = document.getElementById(link.hash.slice(1));
+        if (!excerpt) return;
+        event.preventDefault();
+        excerpt.open = true;
+        excerpt.scrollIntoView({block: "center"});
+        excerpt.querySelector("summary")?.focus({preventScroll: true});
+    });
+}
+"""
 
 
 CSS = """
@@ -641,6 +733,27 @@ footer {
 .r2r-verdict span { font-size: 1.35rem; }
 .r2r-source-card { border-radius: 12px; }
 .r2r-source-card a { color: #047857; }
+.r2r-title { padding: clamp(1.25rem, 4vw, 2rem); }
+.r2r-title h1 { font-size: clamp(2rem, 5vw, 3rem); }
+.r2r-shell textarea { background: #f8fafc !important; color: #172033 !important; }
+.r2r-example { color: #475569 !important; font-size: .9rem; }
+.r2r-status {
+    padding: .65rem 1rem; border-radius: 8px; background: #e5f5ee;
+    color: #17483d; font-weight: 650;
+}
+.r2r-citation {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 1.5rem; min-height: 1.5rem; border-radius: 5px;
+    background: #e5f5ee; color: #075d48 !important; font-weight: 700;
+}
+.r2r-citation:focus-visible, .r2r-excluded summary:focus-visible {
+    outline: 2px solid #047857; outline-offset: 3px;
+}
+.r2r-excluded { margin-top: .9rem; }
+.r2r-excluded summary, .r2r-limitations summary { font-weight: 700; cursor: pointer; }
+.r2r-excluded p { margin: .5rem 0; }
+.r2r-verdict .r2r-takeaway { margin-top: .45rem; }
+.r2r-limitations strong { margin-top: .85rem; }
 @media (max-width: 640px) {
     .r2r-progress { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .r2r-empty-evidence { align-items: start; flex-direction: column; }
@@ -651,7 +764,19 @@ footer {
 with gr.Blocks(
     title="Rumor2Reality",
     css=CSS,
-    theme=gr.themes.Soft(primary_hue="emerald", neutral_hue="slate"),
+    js=JS,
+    theme=gr.themes.Soft(primary_hue="emerald", neutral_hue="slate").set(
+        body_background_fill_dark="#f3f6fa",
+        body_text_color_dark="#172033",
+        block_background_fill_dark="#ffffff",
+        block_label_background_fill_dark="#e5f5ee",
+        block_label_text_color_dark="#17483d",
+        block_title_text_color_dark="#172033",
+        input_background_fill_dark="#f8fafc",
+        input_border_color_dark="#cbd5e1",
+        button_secondary_background_fill_dark="#e2e8f0",
+        button_secondary_text_color_dark="#172033",
+    ),
 ) as demo:
     with gr.Column(elem_classes=["r2r-shell"]):
         gr.Markdown(
@@ -665,10 +790,12 @@ with gr.Blocks(
         )
 
         with gr.Column(elem_classes=["r2r-panel"]):
-            claim_input = gr.Textbox(label="Claim to check", value=DEFAULT_CLAIM, lines=3,
+            claim_input = gr.Textbox(label="Claim to check", lines=3,
                                      max_lines=6, placeholder="Enter a claim about a research topic")
+            gr.Markdown('<p class="r2r-example">Example: Vitamin C prevents the common cold.</p>')
             with gr.Row():
                 run_button = gr.Button("Check claim", variant="primary", scale=3)
+                demo_button = gr.Button("Explore the demo", scale=2)
                 clear_button = gr.Button("Clear results", scale=1)
             with gr.Accordion("Search and model settings", open=False):
                 model_name = gr.Textbox(label="Ollama model", value=DEFAULT_MODEL)
@@ -720,6 +847,12 @@ with gr.Blocks(
         clear_outputs,
         outputs=[progress, answer, sources, timing, debug],
         cancels=[run_event, submit_event],
+    )
+    demo_button.click(
+        show_recorded_demo,
+        outputs=[claim_input, progress, answer, sources, timing, debug],
+        cancels=[run_event, submit_event],
+        queue=False,
     )
 
 
