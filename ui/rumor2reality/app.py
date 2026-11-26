@@ -11,11 +11,11 @@ from pipeline import DEFAULT_MODEL, pipeline_events
 from urllib.parse import urlsplit
 
 
-DEFAULT_CLAIM = "A viral post says that most online rumors are created by bots."
+DEFAULT_CLAIM = "Vitamin C prevents the common cold"
 READY_ANSWER = """
-### Ready to check a rumor
+### Your assessment will appear here
 
-Run the pipeline to see a concise verdict, selected evidence, and timing data.
+Check a claim to see a verdict, confidence, and a summary linked to the evidence below.
 """
 READY_TIMING = {
     "status": "ready",
@@ -67,6 +67,8 @@ def _sources_cards_html(sources: list[dict[str, Any]]) -> str:
         )
         section = html.escape(str(source.get("section", "Unknown section")))
         snippet = html.escape(str(source.get("snippet", "")))
+        source_link = (f'<a href="{url}" target="_blank" rel="noopener noreferrer">Open paper ↗</a>'
+                       if url else "")
         cards.append(
             f"""
             <article class="r2r-source-card">
@@ -82,10 +84,10 @@ def _sources_cards_html(sources: list[dict[str, Any]]) -> str:
               </div>
               <p>{reason}</p>
               <details class="r2r-evidence-excerpt">
-                <summary>Show evidence excerpt</summary>
+                <summary>Show evidence excerpt <span>· {section}</span></summary>
                 <blockquote>{snippet}</blockquote>
               </details>
-              <a href="{url}" target="_blank" rel="noreferrer">Open source - {section}</a>
+              {source_link}
             </article>
             """
         )
@@ -94,10 +96,10 @@ def _sources_cards_html(sources: list[dict[str, Any]]) -> str:
 
 def _progress_html(active_step: str) -> str:
     steps = [
-        ("scrape", "Scrape / load papers"),
-        ("retrieve", "RAG retrieval"),
-        ("generate", "LLM answer"),
-        ("done", "Final response"),
+        ("scrape", "Find papers"),
+        ("retrieve", "Select evidence"),
+        ("generate", "Analyze evidence"),
+        ("done", "Show assessment"),
     ]
 
     cards = []
@@ -612,46 +614,63 @@ button.primary {
 footer {
     display: none !important;
 }
+.gradio-container {
+    background: #f3f6fa !important;
+}
+.r2r-shell { max-width: 1120px; gap: 1.15rem !important; }
+.r2r-title {
+    background: linear-gradient(115deg, #101b31, #193d4b);
+    border-radius: 18px;
+    padding: clamp(1.5rem, 5vw, 3.2rem);
+    margin-bottom: .35rem;
+}
+.r2r-title h1 { color: #fff; letter-spacing: -.045em; }
+.r2r-title p { color: #d0e3e9; margin-bottom: 0; }
+.r2r-title .r2r-kicker {
+    color: #8ee1c9; font-size: .8rem; letter-spacing: .11em;
+    text-transform: uppercase; font-weight: 700; margin-bottom: .7rem;
+}
+.r2r-panel { border-radius: 14px; padding: 1rem !important; background: #fff; }
+.r2r-section-title { font-size: 1rem; color: #172033; }
+.r2r-progress { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.r2r-step { min-height: 66px; }
+.r2r-step-active, .r2r-answer-working { background: #ecfdf5; border-color: #6ee7b7; }
+.r2r-step-active .r2r-step-dot { background: #047857; box-shadow: 0 0 0 4px #a7f3d0; }
+.r2r-answer-card { min-height: 124px; border-radius: 14px; }
+.r2r-answer-ready { background: #fff; }
+.r2r-verdict span { font-size: 1.35rem; }
+.r2r-source-card { border-radius: 12px; }
+.r2r-source-card a { color: #047857; }
+@media (max-width: 640px) {
+    .r2r-progress { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .r2r-empty-evidence { align-items: start; flex-direction: column; }
+}
 """
 
 
 with gr.Blocks(
     title="Rumor2Reality",
     css=CSS,
-    theme=gr.themes.Soft(primary_hue="orange", neutral_hue="slate"),
+    theme=gr.themes.Soft(primary_hue="emerald", neutral_hue="slate"),
 ) as demo:
     with gr.Column(elem_classes=["r2r-shell"]):
         gr.Markdown(
             """
             <div class="r2r-title">
+              <p class="r2r-kicker">Research claim checker</p>
               <h1>Rumor2Reality</h1>
-              <p>Evidence-grounded rumor checking with visible retrieval, citations, and latency.</p>
-              <div class="r2r-badges">
-                <span class="r2r-badge">RAG pipeline</span>
-                <span class="r2r-badge">Source transparency</span>
-                <span class="r2r-badge">Demo-ready deploy</span>
-              </div>
+              <p>Check a claim against research papers and inspect the excerpts behind the assessment.</p>
             </div>
             """
         )
 
-        with gr.Row(equal_height=True):
-            with gr.Column(scale=5):
-                gr.Markdown(
-                    """
-                    <div class="r2r-note">
-                      <strong>Demo flow:</strong> paste a claim, run the check, then explain how the system moved from papers to evidence to final answer.
-                    </div>
-                    """
-                )
-                claim_input = gr.Textbox(
-                    label="Rumor or claim",
-                    value=DEFAULT_CLAIM,
-                    lines=6,
-                    max_lines=8,
-                    placeholder="Paste a rumor, viral claim, or challenge prompt...",
-                )
-            with gr.Column(scale=2):
+        with gr.Column(elem_classes=["r2r-panel"]):
+            claim_input = gr.Textbox(label="Claim to check", value=DEFAULT_CLAIM, lines=3,
+                                     max_lines=6, placeholder="Enter a claim about a research topic")
+            with gr.Row():
+                run_button = gr.Button("Check claim", variant="primary", scale=3)
+                clear_button = gr.Button("Clear results", scale=1)
+            with gr.Accordion("Search and model settings", open=False):
                 model_name = gr.Textbox(label="Ollama model", value=DEFAULT_MODEL)
                 evidence_source = gr.Dropdown(label="Evidence source",
                     choices=["Semantic Scholar", "Existing vector store"], value="Semantic Scholar")
@@ -664,18 +683,11 @@ with gr.Blocks(
                     value=4,
                     step=1,
                 )
-                run_button = gr.Button("Run check", variant="primary")
-                clear_button = gr.Button("Clear")
+        progress = gr.HTML(value=_progress_html("ready"))
+        gr.Markdown('<h2 class="r2r-section-title">Assessment</h2>')
+        answer = gr.HTML(value=_answer_html(READY_ANSWER))
 
-        with gr.Row(equal_height=True):
-            with gr.Column(scale=2):
-                gr.Markdown('<p class="r2r-section-title">Pipeline status</p>')
-                progress = gr.HTML(value=_progress_html("ready"))
-            with gr.Column(scale=3):
-                gr.Markdown('<p class="r2r-section-title">Assessment</p>')
-                answer = gr.HTML(value=_answer_html(READY_ANSWER))
-
-        gr.Markdown('<p class="r2r-section-title">Retrieved evidence</p>')
+        gr.Markdown('<h2 class="r2r-section-title">Cited evidence</h2>')
         sources = gr.HTML(value=_empty_sources_html())
 
         with gr.Accordion("Full pipeline result", open=False):
