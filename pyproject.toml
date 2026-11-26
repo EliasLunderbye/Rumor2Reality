@@ -23,6 +23,8 @@ claim-demo = "app.demo:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+testpaths = ["tests"]
+markers = ["model_download: requires a real embedding model (may download weights)"]
 
 [build-system]
 requires = ["setuptools>=68"]
