@@ -56,6 +56,16 @@ def test_end_to_end_preserves_provenance_and_parallel_execution(chunks):
     assert len(result.analyses) == 2
 
 
+def test_sequential_progress_counts_grouped_papers(chunks):
+    updates = []
+    result = verify_claim(
+        "Synthetic claim", [chunks[0], chunks[0], chunks[1]], llm=FakeLLM(),
+        max_workers=1, paper_progress=lambda index, total: updates.append((index, total)),
+    )
+    assert updates == [(1, 2), (2, 2)]
+    assert len(result.analyses) == 2
+
+
 def test_duplicate_and_conflicting_metadata(chunks):
     papers, notes = group_chunks([chunks[0], chunks[0]])
     assert len(papers[0].chunks) == 1

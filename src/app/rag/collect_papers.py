@@ -2,6 +2,7 @@
 import os
 import json
 import math
+from collections import OrderedDict
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -13,6 +14,28 @@ from app.llm.schemas import RetrievedChunk
 
 _request_lock = Lock()
 _next_request_at = 0.0
+_search_cache = OrderedDict()
+_cache_lock = Lock()
+_cache_seconds = 600
+
+
+def fetch_papers_for_comparison(query: str, limit: int) -> list[dict]:
+    """Reuse a successful search briefly when only the retrieval budget changes."""
+    key = (query, limit)
+    with _cache_lock:
+        cached = _search_cache.get(key)
+        if cached is not None and cached[0] > time.monotonic():
+            _search_cache.move_to_end(key)
+            return cached[1]
+        _search_cache.pop(key, None)
+    papers = fetch_papers(query, limit=limit)
+    if papers:
+        with _cache_lock:
+            _search_cache[key] = (time.monotonic() + _cache_seconds, papers)
+            _search_cache.move_to_end(key)
+            while len(_search_cache) > 32:
+                _search_cache.popitem(last=False)
+    return papers
 
 
 class PaperSearchRateLimited(RuntimeError):

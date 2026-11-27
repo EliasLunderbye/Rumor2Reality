@@ -42,3 +42,24 @@ def test_long_retry_after_is_not_ignored(monkeypatch):
     monkeypatch.setattr(collect_papers.time, 'sleep', lambda delay: pytest.fail('Must not retry early'))
     with pytest.raises(RuntimeError, match='rate-limiting'):
         collect_papers.fetch_papers('claim')
+
+
+def test_comparison_reuses_search_until_expiry(monkeypatch):
+    from collections import OrderedDict
+
+    monkeypatch.setattr(collect_papers, "_search_cache", OrderedDict())
+    calls = []
+    now = [100.0]
+    monkeypatch.setattr(collect_papers.time, "monotonic", lambda: now[0])
+
+    def fetch(query, limit):
+        calls.append((query, limit))
+        return [{"paperId": "p"}]
+
+    monkeypatch.setattr(collect_papers, "fetch_papers", fetch)
+    assert collect_papers.fetch_papers_for_comparison("same claim", 20)
+    assert collect_papers.fetch_papers_for_comparison("same claim", 20)
+    assert calls == [("same claim", 20)]
+    now[0] += 601
+    assert collect_papers.fetch_papers_for_comparison("same claim", 20)
+    assert len(calls) == 2

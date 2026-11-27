@@ -10,7 +10,7 @@ from app.llm.schemas import RetrievedChunk, PaperAnalysis, PaperAssessment
 from app.llm.citations import CitationValidationError
 
 
-def build_graph(*, llm=None, max_workers=3, retries=1, retriever=None, **group_options):
+def build_graph(*, llm=None, max_workers=3, retries=1, retriever=None, paper_progress=None, **group_options):
     """Build LangGraph workflow for claim verification.
     
     Args:
@@ -58,6 +58,14 @@ def build_graph(*, llm=None, max_workers=3, retries=1, retriever=None, **group_o
             return PaperAnalysis(paper_id=paper.paper_id, title=paper.title, status="failed",
                 error=error, assessment=PaperAssessment(stance="insufficient",
                     explanation="Paper could not be analyzed due to a processing failure."))
+        if max_workers == 1:
+            papers = state["papers"]
+            analyses = []
+            for index, paper in enumerate(papers, start=1):
+                if paper_progress is not None:
+                    paper_progress(index, len(papers))
+                analyses.append(run(paper))
+            return {"analyses": analyses}
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             return {"analyses": list(pool.map(run, state["papers"]))}
 

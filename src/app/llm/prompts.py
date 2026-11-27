@@ -63,6 +63,9 @@ not a calibrated probability. Abstract-only evidence and failed analyses limit
 confidence. Do not invent an evidence cutoff, study design, or source details.
 Every evidence_summary statement must cite one or more supplied citation_ids.
 Use the exact IDs, without brackets. Address conflicting findings fairly.
+Explicitly summarize relevant null results alongside positive findings and
+cite each. If excerpts identify a shared dataset, describe it as one body of
+evidence even if multiple publications reported it.
 Include directly relevant findings that apply to narrower settings, even when
 they do not change the overall verdict. Describe the settings actually studied
 without implying that any observed benefit is exclusive to those settings.

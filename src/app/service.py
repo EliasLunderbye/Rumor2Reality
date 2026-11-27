@@ -24,7 +24,8 @@ class PaperDiscoveryRateLimited(VerificationUnavailable):
 
 
 def pipeline_events(claim, top_k=4, model_name=DEFAULT_MODEL,
-                    evidence_source="Semantic Scholar", vector_store_path="", *, llm=None):
+                    evidence_source="Semantic Scholar", vector_store_path="", *, llm=None,
+                    paper_progress=None, reuse_paper_search=False):
     """Yield actual stage transitions followed by the UI result contract."""
     claim = (claim or "").strip()
     if not claim:
@@ -42,10 +43,16 @@ def pipeline_events(claim, top_k=4, model_name=DEFAULT_MODEL,
     from app.rag.retriever import create_retriever
     embedding_model = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     if evidence_source == "Semantic Scholar":
-        from app.rag.collect_papers import PaperSearchRateLimited, fetch_papers, papers_to_chunks
+        from app.rag.collect_papers import (
+            PaperSearchRateLimited, fetch_papers, fetch_papers_for_comparison, papers_to_chunks,
+        )
         from app.rag.ingest import ingest_chunks
         try:
-            papers = fetch_papers(claim, limit=min(100, max(20, top_k * 3)))
+            if reuse_paper_search:
+                candidate_limit = 20 if top_k <= 8 else top_k * 3
+                papers = fetch_papers_for_comparison(claim, limit=candidate_limit)
+            else:
+                papers = fetch_papers(claim, limit=min(100, max(20, top_k * 3)))
         except PaperSearchRateLimited as exc:
             raise PaperDiscoveryRateLimited(exc.retry_after) from exc
         except (OSError, RuntimeError) as exc:
@@ -75,7 +82,7 @@ def pipeline_events(claim, top_k=4, model_name=DEFAULT_MODEL,
     try:
         result = verify_claim(
             claim, selected, llm=llm if llm is not None else get_llm(model_name=model_name),
-            max_papers=top_k, max_workers=1,
+            max_papers=top_k, max_workers=1, paper_progress=paper_progress,
         )
     except Exception as exc:
         raise VerificationUnavailable("Model processing failed; the claim has not been assessed.") from exc
@@ -104,7 +111,8 @@ def pipeline_events(claim, top_k=4, model_name=DEFAULT_MODEL,
         "limitations": result.limitations, "answer": "",
         "sources": sources, "timings": timings,
         "metadata": {"model": model_name, "papers_available": available, "top_k": top_k,
-                     "pipeline_mode": evidence_source, "retrieved_chunks": len(selected)},
+                     "pipeline_mode": evidence_source, "retrieved_chunks": len(selected),
+                     "cited_papers": len({source.paper_id for source in result.sources})},
         "assessment": result.model_dump(mode="json"),
     }
 

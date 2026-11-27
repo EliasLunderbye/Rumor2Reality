@@ -112,6 +112,13 @@ For a fixed evidence quality check with Ollama running, execute
 root in PowerShell. The script uses synthetic excerpts and skips live paper
 search. Review each response against the printed criterion.
 
+Use `--budgets 2 4` to compare smaller and larger evidence sets. The runner
+holds the input order fixed, reports runtime and distinct cited papers, and
+includes two publications derived from the same dataset. This comparison
+isolates the evidence supplied to the model from live search ranking. Check
+whether citations support the statements and whether additional excerpts add
+independent evidence or conflicting findings.
+
 The live vitamin C baseline returned HTTP 200 and excluded the treatment-only
 study from the verdict and confidence rationale. Manual review found two
 remaining issues: the rationale treated reviews as independent without knowing
