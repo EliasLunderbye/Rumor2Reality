@@ -229,7 +229,8 @@ def _answer_html(
     )
 
 
-def analyse_claim(claim: str, top_k: int, model_name: str, evidence_source="Semantic Scholar", vector_store_path=""):
+def analyse_claim(claim: str, top_k: int, model_name: str, evidence_source="Semantic Scholar",
+                  vector_store_path="", progress=gr.Progress()):
     claim = (claim or "").strip()
     if not claim:
         yield (
@@ -244,12 +245,23 @@ def analyse_claim(claim: str, top_k: int, model_name: str, evidence_source="Sema
     messages = {"scrape": "Loading candidate evidence...", "retrieve": "Embedding and retrieving evidence...",
                 "generate": "Analyzing papers and synthesizing cited findings..."}
     try:
-        for stage, result in pipeline_events(claim, int(top_k), model_name, evidence_source, vector_store_path):
+        def report_paper(index, total):
+            progress((index - 1, total), desc=f"Analyzing paper {index} of {total}")
+
+        for stage, result in pipeline_events(
+            claim, int(top_k), model_name, evidence_source, vector_store_path,
+            paper_progress=report_paper, reuse_paper_search=True,
+        ):
             if stage != "done":
                 yield (_progress_html(stage), _answer_html("### Checking evidence\n\n" + messages[stage], "working"),
                        _empty_sources_html(), {"status": messages[stage]}, "")
             else:
-                yield (_progress_html("done"), _answer_html(result["answer"], "done",
+                metadata = result["metadata"]
+                excerpts = metadata["retrieved_chunks"]
+                papers = metadata["cited_papers"]
+                counts = (f"{excerpts} {'excerpt' if excerpts == 1 else 'excerpts'} retrieved · "
+                          f"{papers} {'paper' if papers == 1 else 'papers'} cited")
+                yield (_progress_html("done"), _answer_html(counts, "done",
                        verdict=result["verdict"], confidence=result["confidence"],
                        evidence_summary=result["evidence_summary"], limitations=result["limitations"],
                        source_ids={str(source["rank"]) for source in result["sources"]},
@@ -837,11 +849,13 @@ with gr.Blocks(
         analyse_claim,
         inputs=[claim_input, top_k, model_name, evidence_source, vector_store_path],
         outputs=[progress, answer, sources, timing, debug],
+        show_progress_on=[progress],
     )
     submit_event = claim_input.submit(
         analyse_claim,
         inputs=[claim_input, top_k, model_name, evidence_source, vector_store_path],
         outputs=[progress, answer, sources, timing, debug],
+        show_progress_on=[progress],
     )
     clear_button.click(
         clear_outputs,

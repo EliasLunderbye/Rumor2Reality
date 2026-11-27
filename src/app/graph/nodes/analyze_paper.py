@@ -1,3 +1,5 @@
+import json
+
 from langchain_core.messages import SystemMessage, HumanMessage
 from app.llm.client import get_llm
 from app.llm.schemas import ScientificPaper, PaperAssessment, PaperAnalysis
@@ -20,10 +22,14 @@ def analyze_single_paper(claim: str, paper: ScientificPaper, *, llm=None,
         HumanMessage(content=f"Scientific claim:\n{claim}\n\nPaper evidence JSON:\n{paper.model_dump_json()}"),
     ]
     if retry_feedback:
+        allowed_ids = json.dumps([chunk.chunk_id for chunk in paper.chunks])
         messages.append(HumanMessage(content=(
-            "The previous response failed validation. Return a complete structured assessment "
-            "with findings containing exact chunk IDs from the supplied paper. "
-            f"Retry diagnostic: {retry_feedback}")))
+            f"Retry diagnostic: {retry_feedback}\n"
+            f"Allowed chunk IDs: {allowed_ids}\n"
+            "Read the results first. If the excerpt reports an outcome relevant to the "
+            "claim, put that observation in findings, even when it reports no measurable "
+            "effect or its methods are incomplete. Copy an allowed chunk ID verbatim. "
+            "Keep methodological uncertainty in limitations.")))
     if recheck_findings:
         messages.append(HumanMessage(content=(
             "Recheck the excerpts for an explicitly reported result measuring the claimed "
